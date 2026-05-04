@@ -18,6 +18,7 @@ namespace AvgSellPrice.Server;
 public class TraderPriceService(
     ISptLogger<TraderPriceService> logger,
     DatabaseService databaseService,
+    RagfairPriceService ragfairPriceService,
     RagfairOfferHolder ragfairOfferHolder)
 {
     private Dictionary<string, int> _traderCache = [];
@@ -292,46 +293,83 @@ public class TraderPriceService(
             {
                 var tables = databaseService.GetTables();
                 object? templates = tables?.GetType().GetProperty("Templates")?.GetValue(tables);
-                object? pricesObject = templates?.GetType().GetProperty("Prices")?.GetValue(templates);
 
                 var fleaPrices = new Dictionary<string, FleaPriceEntry>();
                 var fleaSellable = GetFleaSellableMap(templates);
 
-                if (pricesObject is IDictionary dictionary)
+                try
                 {
-                    foreach (DictionaryEntry entry in dictionary)
+                    ragfairPriceService.RefreshStaticPrices();
+                    var sptFleaPrices = ragfairPriceService.GetAllFleaPrices();
+
+                    foreach (var (templateId, rawPrice) in sptFleaPrices)
                     {
-                        string? templateId = entry.Key?.ToString();
-                        if (string.IsNullOrWhiteSpace(templateId))
+                        string? templateKey = templateId.ToString();
+                        if (string.IsNullOrWhiteSpace(templateKey))
                         {
                             continue;
                         }
 
-                        int price = Convert.ToInt32(entry.Value ?? 0);
+                        int price = Convert.ToInt32(Math.Ceiling(rawPrice));
                         if (price <= 0)
                         {
                             continue;
                         }
 
-                        if (fleaPrices.ContainsKey(templateId))
+                        if (fleaPrices.ContainsKey(templateKey))
                         {
                             continue;
                         }
 
-                        bool sellable = !fleaSellable.TryGetValue(templateId, out bool canSell) || canSell;
-                        fleaPrices[templateId] = new FleaPriceEntry(price, sellable);
+                        bool sellable = !fleaSellable.TryGetValue(templateKey, out bool canSell) || canSell;
+                        fleaPrices[templateKey] = new FleaPriceEntry(price, sellable, price, price);
                     }
                 }
-                else
+                catch (Exception ex)
                 {
-                    logger.Warning("[AvgSellPrice] No flea price table found in templates");
+                    logger.Warning($"[AvgSellPrice] Could not read SPT flea price service, falling back to templates: {ex.Message}");
+                }
+
+                if (fleaPrices.Count == 0)
+                {
+                    object? pricesObject = templates?.GetType().GetProperty("Prices")?.GetValue(templates);
+
+                    if (pricesObject is IDictionary dictionary)
+                    {
+                        foreach (DictionaryEntry entry in dictionary)
+                        {
+                            string? templateId = entry.Key?.ToString();
+                            if (string.IsNullOrWhiteSpace(templateId))
+                            {
+                                continue;
+                            }
+
+                            int price = Convert.ToInt32(entry.Value ?? 0);
+                            if (price <= 0)
+                            {
+                                continue;
+                            }
+
+                            if (fleaPrices.ContainsKey(templateId))
+                            {
+                                continue;
+                            }
+
+                            bool sellable = !fleaSellable.TryGetValue(templateId, out bool canSell) || canSell;
+                            fleaPrices[templateId] = new FleaPriceEntry(price, sellable, price, price);
+                        }
+                    }
+                    else
+                    {
+                        logger.Warning("[AvgSellPrice] No flea price table found in templates");
+                    }
                 }
 
                 _fleaCache = fleaPrices;
                 _fleaInitialized = true;
 
                 stopwatch.Stop();
-                logger.Info($"[AvgSellPrice] Built static flea price map: {_fleaCache.Count} items in {stopwatch.ElapsedMilliseconds}ms");
+                logger.Info($"[AvgSellPrice] Built flea price map: {_fleaCache.Count} items in {stopwatch.ElapsedMilliseconds}ms");
             }
             catch (Exception ex)
             {
@@ -434,10 +472,16 @@ public class TraderPriceService(
                 continue;
             }
 
+            int bestPrice = cheapestValidPrices[0];
             int averagedPrice = (int)Math.Ceiling(cheapestValidPrices.Average());
-            if (averagedPrice > 0)
+            if (bestPrice > 0 && averagedPrice > 0)
             {
-                fleaPrices[templateId] = new FleaPriceEntry(averagedPrice, true);
+                int displayPrice = staticPrice > 0
+                    ? staticPrice
+                    : averagedPrice;
+                bool sellable = existing?.Sellable ?? true;
+
+                fleaPrices[templateId] = new FleaPriceEntry(displayPrice, sellable, bestPrice, averagedPrice);
             }
         }
     }
@@ -636,4 +680,4 @@ public class TraderPriceService(
     private record PresetCandidate(int Size, List<string> Parts);
 }
 
-public record FleaPriceEntry(int Price, bool Sellable);
+public record FleaPriceEntry(int Price, bool Sellable, int BestPrice = 0, int AveragePrice = 0);
