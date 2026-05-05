@@ -6,7 +6,7 @@ namespace AvgSellPrice.Server;
 public record ModMetadata : AbstractModMetadata
 {
     public override string ModGuid { get; init; } = "com.fl03ng.gearandlootvalue";
-    public override string Name { get; init; } = "Gear & Loot Value";
+    public override string Name { get; init; } = "GearLootValue";
     public override string Author { get; init; } = "FL03NG";
     public override List<string>? Contributors { get; init; } = [];
     public override SemanticVersioning.Version Version { get; init; } = new("1.0.0");
